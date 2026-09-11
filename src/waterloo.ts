@@ -36,7 +36,7 @@ const DAY_TOKENS: [string, Day][] = [
   ['W', 'Wednesday'],
   ['F', 'Friday'],
 ];
-const TIME_LINE = /^((?:Th|Sa|Su|M|T|W|F)+)\s+(\d{1,2}:\d{2}\s*[AP]M)\s*-\s*(\d{1,2}:\d{2}\s*[AP]M)$/i;
+const TIME_LINE = /^((?:Th|Sa|Su|M|T|W|F)+)\s+(\d{1,2}:\d{2}(?:\s*[AP]M)?)\s*-\s*(\d{1,2}:\d{2}(?:\s*[AP]M)?)$/i;
 const MODERN_HEADING = /^([A-Z]{2,}(?:\s+[A-Z]{2,})?\s+\d+[A-Z]?)\s+-\s+.+$/i;
 const OLD_HEADING = /^([A-Z]{2,}(?:\s+[A-Z]{2,})?\s+\d+[A-Z]?)-(\d{3})$/i;
 
@@ -48,14 +48,17 @@ export function currentWaterlooTerm(date = new Date()): { term: Term; year: numb
   };
 }
 
-function twelveHourToTime(value: string): string | null {
-  const match = value.replace(/\s+/g, '').match(/^(\d{1,2}):(\d{2})(AM|PM)$/i);
+function clockToTime(value: string): string | null {
+  const match = value.replace(/\s+/g, '').match(/^(\d{1,2}):(\d{2})(AM|PM)?$/i);
   if (!match) return null;
   let hour = Number(match[1]);
   const minute = Number(match[2]);
-  if (hour < 1 || hour > 12 || minute > 59) return null;
-  if (hour === 12) hour = 0;
-  if (match[3].toUpperCase() === 'PM') hour += 12;
+  const meridiem = match[3]?.toUpperCase();
+  if (minute > 59 || (meridiem ? hour < 1 || hour > 12 : hour > 23)) return null;
+  if (meridiem) {
+    if (hour === 12) hour = 0;
+    if (meridiem === 'PM') hour += 12;
+  }
   return `${String(hour).padStart(2, '0')}${String(minute).padStart(2, '0')}`;
 }
 
@@ -75,8 +78,8 @@ function parseTimeLine(line: string) {
   const match = line.match(TIME_LINE);
   if (!match) return null;
   const days = parseDays(match[1]);
-  const startTime = twelveHourToTime(match[2]);
-  const endTime = twelveHourToTime(match[3]);
+  const startTime = clockToTime(match[2]);
+  const endTime = clockToTime(match[3]);
   return days && startTime && endTime && timeToMinutes(endTime) > timeToMinutes(startTime)
     ? { days, startTime, endTime }
     : null;

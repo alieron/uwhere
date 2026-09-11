@@ -51,6 +51,58 @@ test('keeps online meetings off the physical map', () => {
   assert.equal(schedule.slots[0].buildingCode, '');
 });
 
+test('parses current Quest 24-hour schedules', () => {
+  const first = parseWaterlooSchedule(`
+    Fall 2026 | Undergraduate | University of Waterloo
+    CO 255 - Intro Optimization (Adv)
+    Enrolled
+    6317
+    001
+    LEC
+    TTh 08:30 - 09:50
+    QNC 2501
+    CS 350 - Operating Systems
+    Enrolled
+    6083
+    001
+    LEC
+    TTh 10:00 - 11:20
+    MC 4040
+    PMATH 333 - Intro Real Analysis
+    Enrolled
+    6344
+    001
+    LEC
+    MWF 10:30 - 11:20
+    QNC 2502
+  `);
+  const second = parseWaterlooSchedule(`
+    Fall 2026 | Undergraduate | University of Waterloo
+    AVIA 100 - Intro Aviation
+    Enrolled
+    7614
+    001
+    LEC
+    W 14:30 - 16:20
+    EXP 1689
+    PSCI 283 - International Political Econ
+    Enrolled
+    3668
+    001
+    LEC
+    TTh 13:00 - 14:20
+    SJ2 1002
+  `);
+
+  assert.equal(first.slots.length, 7);
+  assert.deepEqual(first.slots[0], {
+    courseCode: 'CO 255', classNumber: '6317', section: '001', component: 'LEC',
+    venue: 'QNC 2501', buildingCode: 'QNC', day: 'Tuesday', startTime: '0830', endTime: '0950',
+  });
+  assert.equal(second.slots.length, 3);
+  assert.equal(second.slots.at(-1).buildingCode, 'SJ2');
+});
+
 test('ignores dropped and waitlisted courses', () => {
   const schedule = parseWaterlooSchedule(`
     Fall 2026

@@ -1,15 +1,83 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { neon } from '@neondatabase/serverless';
-import { isGroupContent, isGroupSnapshot } from '../src/group.ts';
 import type { GroupContent, GroupSnapshot } from '../src/group.ts';
 
 const MAX_BODY_BYTES = 256 * 1024;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
+const ID = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,63})$/;
+const COLOR = /^#[0-9a-fA-F]{6}$/;
+const TIME = /^(?:[01]\d|2[0-3])[0-5]\d$/;
+const TERMS = new Set(['Winter', 'Spring', 'Fall']);
+const DAYS = new Set(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']);
+const STUDENT_KEYS = ['id', 'name', 'color', 'term', 'year', 'slots', 'addedAt'] as const;
+const SLOT_KEYS = ['courseCode', 'classNumber', 'section', 'component', 'venue', 'buildingCode', 'day', 'startTime', 'endTime'] as const;
+const GROUP_KEYS = ['name', 'students'] as const;
+const SNAPSHOT_KEYS = ['name', 'students', 'revision', 'createdAt', 'updatedAt'] as const;
 const PRIVATE_HEADERS = {
   'Cache-Control': 'private, no-cache, no-store, max-age=0, must-revalidate',
   Pragma: 'no-cache',
   Vary: 'Authorization',
 } as const;
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function boundedString(value: unknown, max: number, allowEmpty = false): value is string {
+  return typeof value === 'string' && value.length <= max && (allowEmpty || value.length > 0);
+}
+
+function isScheduleSlot(value: unknown): boolean {
+  const slot = record(value);
+  if (!slot || !exactKeys(slot, SLOT_KEYS)) return false;
+  return boundedString(slot.courseCode, 80)
+    && boundedString(slot.classNumber, 64)
+    && boundedString(slot.section, 32)
+    && boundedString(slot.component, 32)
+    && boundedString(slot.venue, 200, true)
+    && boundedString(slot.buildingCode, 32, true)
+    && typeof slot.day === 'string' && DAYS.has(slot.day)
+    && typeof slot.startTime === 'string' && TIME.test(slot.startTime)
+    && typeof slot.endTime === 'string' && TIME.test(slot.endTime)
+    && slot.endTime > slot.startTime;
+}
+
+function isStudent(value: unknown): boolean {
+  const student = record(value);
+  if (!student || !exactKeys(student, STUDENT_KEYS)) return false;
+  return typeof student.id === 'string' && ID.test(student.id)
+    && boundedString(student.name, 80) && student.name === student.name.trim()
+    && typeof student.color === 'string' && COLOR.test(student.color)
+    && typeof student.term === 'string' && TERMS.has(student.term)
+    && Number.isInteger(student.year) && Number(student.year) >= 2000 && Number(student.year) <= 2100
+    && Number.isSafeInteger(student.addedAt) && Number(student.addedAt) >= 0
+    && Array.isArray(student.slots) && student.slots.length <= 500 && student.slots.every(isScheduleSlot);
+}
+
+function isGroupContent(value: unknown): value is GroupContent {
+  const group = record(value);
+  if (!group || !exactKeys(group, GROUP_KEYS)) return false;
+  if (!boundedString(group.name, 80) || group.name !== group.name.trim()) return false;
+  if (!Array.isArray(group.students) || group.students.length > 100 || !group.students.every(isStudent)) return false;
+  return new Set(group.students.map((student) => record(student)?.id)).size === group.students.length;
+}
+
+function isGroupSnapshot(value: unknown): value is GroupSnapshot {
+  const group = record(value);
+  return Boolean(group
+    && exactKeys(group, SNAPSHOT_KEYS)
+    && isGroupContent({ name: group.name, students: group.students })
+    && Number.isSafeInteger(group.revision) && Number(group.revision) >= 0
+    && typeof group.createdAt === 'string' && group.createdAt.length <= 40 && Number.isFinite(Date.parse(group.createdAt))
+    && typeof group.updatedAt === 'string' && group.updatedAt.length <= 40 && Number.isFinite(Date.parse(group.updatedAt)));
+}
 
 export type GroupRepository = {
   create(tokenHash: string): Promise<GroupSnapshot>;
@@ -89,7 +157,7 @@ export async function readJsonBody(request: Request): Promise<unknown> {
 function exactObject(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const actual = Object.keys(value);
-  return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+  return actual.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
 export function parsePutBody(value: unknown): { revision: number; content: GroupContent } | null {
@@ -131,7 +199,6 @@ export async function handleGroupRequest(
 ): Promise<Response> {
   if (method === 'POST') {
     if (isCrossSite(request)) return error(403, 'Forbidden');
-    if (request.body !== null) return error(400, 'Invalid request');
     const token = generateGroupToken();
     const snapshot = await repository.create(hashGroupToken(token));
     return json({ token, snapshot }, 201);

@@ -133,7 +133,10 @@ test('handles create, conditional reads, stale writes, and revision deletes', as
     },
   };
 
-  const created = await handleGroupRequest(new Request('https://example.test/api/group', { method: 'POST' }), repository);
+  const created = await handleGroupRequest(new Request('https://example.test/api/group', {
+    method: 'POST',
+    body: '',
+  }), repository);
   const creation = await created.json();
   assert.equal(created.status, 201);
   assert.match(creation.token, /^[A-Za-z0-9_-]{43}$/);

@@ -36,7 +36,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value);
-  return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+  return actual.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
 function isBoundedString(value: unknown, max: number, allowEmpty = false): value is string {

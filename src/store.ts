@@ -1,139 +1,136 @@
-import { DAYS, TERMS, defaultColor } from './waterloo';
-import type { BuildingLocation, ParsedSchedule, ScheduleSlot, Term } from './waterloo';
+import { isGroupSnapshot } from './group.ts';
+import type { GroupSnapshot } from './group.ts';
+import type { BuildingLocation } from './waterloo.ts';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+export const GROUPS_KEY = 'uwhere_groups_v1';
+const TOKEN = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 
-export interface Student {
-  id: string;
-  name: string;
-  color: string;
-  term: Term;
-  year: number;
-  slots: ScheduleSlot[];
-  addedAt: number;
+export interface GroupEntry {
+  token: string;
+  snapshot: GroupSnapshot | null;
 }
 
-export type StudentPatch = Partial<Pick<Student, 'name' | 'color' | 'term' | 'year' | 'slots'>>;
+export interface GroupRegistry {
+  entries: GroupEntry[];
+  activeToken: string | null;
+}
+
+export interface RegistryInitialization {
+  registry: GroupRegistry;
+  storageWarningToken: string | null;
+}
 
 export interface AppState {
-  students: Student[];
   buildingLocations: Record<string, BuildingLocation>;
   buildingsLoaded: boolean;
 }
 
-// ── Persistence ───────────────────────────────────────────────────────────────
-
-const STUDENTS_KEY = 'uwhere_waterloo_students';
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object';
-}
-
-function isSlot(value: unknown): value is ScheduleSlot {
-  if (!isObject(value)) return false;
-  return ['courseCode', 'classNumber', 'section', 'component', 'venue', 'buildingCode', 'startTime', 'endTime']
-    .every((key) => typeof value[key] === 'string')
-    && typeof value.day === 'string'
-    && DAYS.includes(value.day as ScheduleSlot['day']);
-}
-
-function isStudent(value: unknown): value is Student {
-  return isObject(value)
-    && typeof value.id === 'string'
-    && typeof value.name === 'string'
-    && typeof value.color === 'string'
-    && typeof value.term === 'string'
-    && TERMS.includes(value.term as Term)
-    && Number.isInteger(value.year)
-    && typeof value.addedAt === 'number'
-    && Array.isArray(value.slots)
-    && value.slots.every(isSlot);
-}
-
-export function loadStudents(): Student[] {
-  try {
-    const raw = localStorage.getItem(STUDENTS_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter(isStudent) : [];
-  } catch { return []; }
-}
-
-export function persistStudents(list: Student[]): void {
-  localStorage.setItem(STUDENTS_KEY, JSON.stringify(list));
-}
-
-// ── Actions (pure async functions that call setState) ─────────────────────────
-// These take a React setState dispatcher so there is no singleton state here.
-// state lives in the React tree where it belongs.
-
+type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
 type SetState = React.Dispatch<React.SetStateAction<AppState>>;
 
-export async function loadBuildings(setState: SetState): Promise<void> {
+export function isGroupToken(value: unknown): value is string {
+  return typeof value === 'string' && TOKEN.test(value);
+}
+
+export function parseRegistry(raw: string | null): GroupRegistry {
   try {
-    const res = await fetch(`${import.meta.env.BASE_URL}data/buildings.json`);
-    if (!res.ok) throw new Error(`Building data could not be loaded (${res.status})`);
-    const buildings = await res.json() as Record<string, BuildingLocation>;
-    setState(s => ({ ...s, buildingLocations: buildings, buildingsLoaded: true }));
-  } catch (e) {
-    console.error(e instanceof Error ? e.message : String(e));
+    const value: unknown = raw ? JSON.parse(raw) : null;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+    const candidate = value as Record<string, unknown>;
+    if (!Array.isArray(candidate.entries)) throw new Error();
+
+    const entries: GroupEntry[] = [];
+    const seen = new Set<string>();
+    for (const item of candidate.entries) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const entry = item as Record<string, unknown>;
+      if (!isGroupToken(entry.token) || seen.has(entry.token)) continue;
+      if (entry.snapshot !== null && !isGroupSnapshot(entry.snapshot)) continue;
+      seen.add(entry.token);
+      entries.push({ token: entry.token, snapshot: entry.snapshot });
+    }
+
+    const activeToken = isGroupToken(candidate.activeToken)
+      && entries.some((entry) => entry.token === candidate.activeToken)
+      ? candidate.activeToken
+      : entries[0]?.token ?? null;
+    return { entries, activeToken };
+  } catch {
+    return { entries: [], activeToken: null };
   }
 }
 
-export function addStudent(
-  schedule: ParsedSchedule,
-  name: string,
-  color: string | undefined,
-  state: AppState,
-  setState: SetState,
-): void {
-  const id = crypto.randomUUID?.() ?? [...crypto.getRandomValues(new Uint32Array(4))].join('-');
-  const student: Student = {
-    id,
-    name: name.trim() || `Person ${state.students.length + 1}`,
-    color: color || defaultColor(state.students.length),
-    term: schedule.term,
-    year: schedule.year,
-    slots: schedule.slots,
-    addedAt: Date.now(),
+export function loadRegistry(storage?: StorageLike): GroupRegistry {
+  try {
+    return parseRegistry((storage ?? localStorage).getItem(GROUPS_KEY));
+  } catch {
+    return { entries: [], activeToken: null };
+  }
+}
+
+export function persistRegistry(registry: GroupRegistry, storage?: StorageLike): boolean {
+  try {
+    (storage ?? localStorage).setItem(GROUPS_KEY, JSON.stringify(registry));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function initializeRegistry(fragment: string, storage?: StorageLike): RegistryInitialization {
+  let registry = loadRegistry(storage);
+  const token = groupTokenFromFragment(fragment);
+  if (token) registry = importGroupToken(registry, token);
+  const persisted = persistRegistry(registry, storage);
+  return { registry, storageWarningToken: token && !persisted ? token : null };
+}
+
+export function groupTokenFromFragment(fragment: string): string | null {
+  const match = fragment.match(/^#group=([A-Za-z0-9_-]{43})$/);
+  return match && isGroupToken(match[1]) ? match[1] : null;
+}
+
+export function importGroupToken(registry: GroupRegistry, token: string): GroupRegistry {
+  if (!isGroupToken(token)) return registry;
+  return {
+    entries: registry.entries.some((entry) => entry.token === token)
+      ? registry.entries
+      : [...registry.entries, { token, snapshot: null }],
+    activeToken: token,
   };
-  const newList = [...state.students, student];
-  persistStudents(newList);
-  setState(s => ({ ...s, students: newList }));
 }
 
-export function updateStudent(id: string, patch: StudentPatch, setState: SetState): void {
-  setState(s => {
-    const newList = s.students.map(st => st.id === id ? { ...st, ...patch } : st);
-    persistStudents(newList);
-    return { ...s, students: newList };
-  });
+export function forgetGroup(registry: GroupRegistry, token: string): GroupRegistry {
+  const entries = registry.entries.filter((entry) => entry.token !== token);
+  return {
+    entries,
+    activeToken: registry.activeToken === token ? entries[0]?.token ?? null : registry.activeToken,
+  };
 }
 
-export function moveStudent(id: string, offset: number, setState: SetState): void {
-  setState(s => {
-    const from = s.students.findIndex(student => student.id === id);
-    const to = Math.min(s.students.length - 1, Math.max(0, from + offset));
-    if (from < 0 || from === to) return s;
-    const students = [...s.students];
-    const [student] = students.splice(from, 1);
-    students.splice(to, 0, student);
-    persistStudents(students);
-    return { ...s, students };
-  });
+export function acceptSnapshot(current: GroupSnapshot | null, incoming: GroupSnapshot): GroupSnapshot {
+  return current && current.revision > incoming.revision ? current : incoming;
 }
 
-export function removeStudent(id: string, setState: SetState): void {
-  setState(s => {
-    const newList = s.students.filter(st => st.id !== id);
-    persistStudents(newList);
-    return { ...s, students: newList };
-  });
+export function groupInviteUrl(
+  location: Pick<Location, 'origin' | 'pathname' | 'search'>,
+  token: string,
+): string {
+  if (!isGroupToken(token)) throw new Error('Invalid group token');
+  return `${location.origin}${location.pathname}${location.search}#group=${token}`;
+}
+
+export async function loadBuildings(setState: SetState): Promise<void> {
+  try {
+    const response = await fetch(`${import.meta.env.BASE_URL}data/buildings.json`);
+    if (!response.ok) throw new Error(`Building data could not be loaded (${response.status})`);
+    const buildings = await response.json() as Record<string, BuildingLocation>;
+    setState((state) => ({ ...state, buildingLocations: buildings, buildingsLoaded: true }));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
 }
 
 export function initialState(): AppState {
-  return {
-    students: loadStudents(),
-    buildingLocations: {},
-    buildingsLoaded: false,
-  };
+  return { buildingLocations: {}, buildingsLoaded: false };
 }

@@ -13,8 +13,8 @@ import {
 import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { parseWaterlooSchedule, defaultColor } from './waterloo';
-import { addStudent, updateStudent } from './store';
-import type { AppState, Student } from './store';
+import type { ParsedSchedule } from './waterloo';
+import type { Student } from './group';
 
 const PRESETS = [
   '#2f80ed', '#16a34a', '#f59e0b', '#dc2626',
@@ -25,17 +25,17 @@ interface Props {
   onClose: () => void;
   studentCount: number;
   student?: Student;
-  state: AppState;
-  setState: React.Dispatch<React.SetStateAction<AppState>>;
-  onDelete: (id: string) => void;
+  onSave: (value: { name: string; color: string; schedule: ParsedSchedule | null }) => Promise<void>;
+  onDelete: () => Promise<void>;
 }
 
-export default function AddStudentModal({ onClose, studentCount, student, state, setState, onDelete }: Props) {
+export default function AddStudentModal({ onClose, studentCount, student, onSave, onDelete }: Props) {
   const isEditing = Boolean(student);
   const [scheduleText, setScheduleText] = useState('');
   const [name, setName] = useState(() => student?.name ?? '');
   const [color, setColor] = useState(() => student?.color ?? defaultColor(studentCount));
   const [error, setError] = useState('');
+  const [pending, setPending] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const preview = useMemo(() => {
     if (!scheduleText.trim()) return { schedule: null, error: '' };
@@ -62,43 +62,59 @@ export default function AddStudentModal({ onClose, studentCount, student, state,
     return true;
   }
 
-  function submit(event: React.FormEvent) {
+  async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!validate()) return;
-    if (student) {
-      updateStudent(student.id, {
-        name: name.trim() || student.name,
+    if (pending || !validate()) return;
+    setPending(true);
+    try {
+      await onSave({
+        name: name.trim() || student?.name || `Person ${studentCount + 1}`,
         color,
-        ...(preview.schedule ?? {}),
-      }, setState);
-    } else if (preview.schedule) {
-      addStudent(preview.schedule, name, color, state, setState);
+        schedule: preview.schedule,
+      });
+      onClose();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Something went wrong. Try again.');
+    } finally {
+      setPending(false);
     }
-    onClose();
+  }
+
+  async function deletePerson() {
+    if (pending) return;
+    setPending(true);
+    setError('');
+    try {
+      await onDelete();
+      onClose();
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Something went wrong. Try again.');
+    } finally {
+      setPending(false);
+    }
   }
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg">
+    <Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-lg" aria-busy={pending} showCloseButton={!pending}>
         {confirmingDelete && student ? (
           <>
             <DialogHeader>
               <DialogTitle>Delete {student.name}?</DialogTitle>
               <DialogDescription>
-                Their timetable will be removed from this browser. This cannot be undone.
+                Their timetable will be removed from the shared group for everyone. This cannot be undone.
               </DialogDescription>
             </DialogHeader>
+            <FieldError>{error}</FieldError>
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setConfirmingDelete(false)}>
+              <Button type="button" variant="outline" disabled={pending} onClick={() => setConfirmingDelete(false)}>
                 Keep person
               </Button>
               <Button
                 type="button"
                 variant="destructive"
-                onClick={() => {
-                  onDelete(student.id);
-                  onClose();
-                }}
+                disabled={pending}
+                onClick={() => void deletePerson()}
               >
                 Delete person
               </Button>
@@ -122,6 +138,7 @@ export default function AddStudentModal({ onClose, studentCount, student, state,
               <textarea
                 id="quest-schedule"
                 value={scheduleText}
+                disabled={pending}
                 onChange={(event) => {
                   setScheduleText(event.target.value);
                   if (error) setError('');
@@ -149,8 +166,10 @@ export default function AddStudentModal({ onClose, studentCount, student, state,
               <Input
                 id="person-name"
                 value={name}
+                disabled={pending}
                 onChange={(event) => setName(event.target.value)}
                 placeholder={student?.name ?? `Person ${studentCount + 1}`}
+                maxLength={80}
               />
             </Field>
 
@@ -164,6 +183,7 @@ export default function AddStudentModal({ onClose, studentCount, student, state,
                   id="person-color"
                   type="color"
                   value={color}
+                  disabled={pending}
                   onChange={(event) => setColor(event.target.value)}
                   className="size-10 shrink-0 p-1"
                 />
@@ -171,6 +191,7 @@ export default function AddStudentModal({ onClose, studentCount, student, state,
                   <button
                     key={preset}
                     type="button"
+                    disabled={pending}
                     onClick={() => setColor(preset)}
                     aria-label={`Use colour ${preset}`}
                     aria-pressed={color === preset}
@@ -184,12 +205,12 @@ export default function AddStudentModal({ onClose, studentCount, student, state,
 
           <DialogFooter>
             {isEditing && (
-              <Button type="button" variant="destructive" className="sm:mr-auto" onClick={() => setConfirmingDelete(true)}>
+              <Button type="button" variant="destructive" className="sm:mr-auto" disabled={pending} onClick={() => setConfirmingDelete(true)}>
                 Delete person
               </Button>
             )}
-            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit">
+            <Button type="button" variant="outline" disabled={pending} onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={pending}>
               {isEditing ? 'Save person' : 'Add person'}
             </Button>
           </DialogFooter>

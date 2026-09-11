@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { GripVertical, MapPinOff, Settings, UserPlus } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
@@ -23,11 +23,32 @@ import {
   timeToMinutes,
 } from './waterloo';
 import type { Day, ScheduleSlot } from './waterloo';
-import type { AppState, Student } from './store';
-import { initialState, loadBuildings, moveStudent, removeStudent } from './store';
+import type { GroupContent, GroupSnapshot, Student } from './group';
+import type { AppState, GroupEntry, GroupRegistry } from './store';
+import {
+  acceptSnapshot,
+  forgetGroup,
+  groupInviteUrl,
+  groupTokenFromFragment,
+  importGroupToken,
+  initializeRegistry,
+  initialState,
+  loadBuildings,
+  persistRegistry,
+} from './store';
+import {
+  createGroup,
+  deleteGroup,
+  getGroup,
+  GroupConflictError,
+  MissingGroupError,
+  putGroup,
+  snapshotForRevision,
+} from './group-client';
 import MapView from './MapView';
 import type { MapMarker } from './MapView';
 import AddStudentModal from './AddStudentModal';
+import GroupControls from './GroupControls';
 import TimelineControls from './TimelineControls';
 
 const DAY_START = 8 * 60;
@@ -65,6 +86,7 @@ interface ScheduleDockProps {
   onJumpToNow: () => void;
   onEditPerson: (id: string) => void;
   onMovePerson: (id: string, offset: number) => void;
+  reorderDisabled: boolean;
   buildingLocations: AppState['buildingLocations'];
   mobileHeight: number;
   onMobileHeightChange: (height: number) => void;
@@ -121,6 +143,7 @@ function PersonLabel({
   mobile = false,
   onEdit,
   onMove,
+  reorderDisabled,
   dragging = false,
   onDragPreview,
 }: {
@@ -129,6 +152,7 @@ function PersonLabel({
   mobile?: boolean;
   onEdit: () => void;
   onMove: (offset: number) => void;
+  reorderDisabled: boolean;
   dragging?: boolean;
   onDragPreview: (offset: number | null) => void;
 }) {
@@ -149,7 +173,9 @@ function PersonLabel({
               size="icon-xs"
               className={cn('shrink-0 touch-none', dragging ? 'cursor-grabbing bg-muted' : 'cursor-grab')}
               aria-label={`Reorder ${student.name}`}
+              disabled={reorderDisabled}
               onPointerDown={(event) => {
+                if (reorderDisabled) return;
                 dragStartY.current = event.clientY;
                 event.currentTarget.setPointerCapture(event.pointerId);
                 onDragPreview(0);
@@ -161,7 +187,7 @@ function PersonLabel({
               onPointerUp={(event) => {
                 if (dragStartY.current !== null) {
                   const offset = Math.round((event.clientY - dragStartY.current) / (mobile ? 48 : 32));
-                  if (offset) onMove(offset);
+                  if (offset && !reorderDisabled) onMove(offset);
                 }
                 dragStartY.current = null;
                 onDragPreview(null);
@@ -171,6 +197,7 @@ function PersonLabel({
                 onDragPreview(null);
               }}
               onKeyDown={(event) => {
+                if (reorderDisabled) return;
                 if (event.key === 'ArrowUp') {
                   event.preventDefault();
                   onMove(-1);
@@ -359,6 +386,7 @@ function DesktopTimeline({
   onSelectTime,
   onEditPerson,
   onMovePerson,
+  reorderDisabled,
   buildingLocations,
 }: {
   rows: TimelineRow[];
@@ -367,6 +395,7 @@ function DesktopTimeline({
   onSelectTime: (time: string) => void;
   onEditPerson: (id: string) => void;
   onMovePerson: (id: string, offset: number) => void;
+  reorderDisabled: boolean;
   buildingLocations: AppState['buildingLocations'];
 }) {
   const scrubberLeft = `${timelinePercent(selectedMinutes)}%`;
@@ -436,6 +465,7 @@ function DesktopTimeline({
                 dragging={dragPreview?.student.id === student.id}
                 onEdit={() => onEditPerson(student.id)}
                 onMove={(offset) => onMovePerson(student.id, offset)}
+                reorderDisabled={reorderDisabled}
                 onDragPreview={(offset) => setDragPreview(offset === null ? null : { student, offset })}
               />
             </div>
@@ -473,6 +503,7 @@ function MobileTimeline({
   onSelectTime,
   onEditPerson,
   onMovePerson,
+  reorderDisabled,
   buildingLocations,
 }: {
   rows: TimelineRow[];
@@ -481,6 +512,7 @@ function MobileTimeline({
   onSelectTime: (time: string) => void;
   onEditPerson: (id: string) => void;
   onMovePerson: (id: string, offset: number) => void;
+  reorderDisabled: boolean;
   buildingLocations: AppState['buildingLocations'];
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -547,6 +579,7 @@ function MobileTimeline({
                   dragging={dragPreview?.student.id === student.id}
                   onEdit={() => onEditPerson(student.id)}
                   onMove={(offset) => onMovePerson(student.id, offset)}
+                  reorderDisabled={reorderDisabled}
                   onDragPreview={(offset) => setDragPreview(offset === null ? null : { student, offset })}
                 />
               </div>
@@ -583,6 +616,7 @@ function ScheduleDock({
   onJumpToNow,
   onEditPerson,
   onMovePerson,
+  reorderDisabled,
   buildingLocations,
   mobileHeight,
   onMobileHeightChange,
@@ -654,6 +688,7 @@ function ScheduleDock({
         onSelectTime={onSelectTime}
         onEditPerson={onEditPerson}
         onMovePerson={onMovePerson}
+        reorderDisabled={reorderDisabled}
         buildingLocations={buildingLocations}
       />
       <MobileTimeline
@@ -663,28 +698,215 @@ function ScheduleDock({
         onSelectTime={onSelectTime}
         onEditPerson={onEditPerson}
         onMovePerson={onMovePerson}
+        reorderDisabled={reorderDisabled}
         buildingLocations={buildingLocations}
       />
     </section>
   );
 }
 
+interface PersonEditor {
+  token: string;
+  base: GroupSnapshot;
+  studentId: string | null;
+  student: Student | null;
+}
+
+function scrubGroupFragment() {
+  if (window.location.hash.startsWith('#group=')) {
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`);
+  }
+}
+
+function initialRegistry() {
+  try {
+    return initializeRegistry(window.location.hash);
+  } finally {
+    scrubGroupFragment();
+  }
+}
+
+function reorderedStudents(students: Student[], id: string, offset: number): Student[] | null {
+  const from = students.findIndex((student) => student.id === id);
+  const to = Math.min(students.length - 1, Math.max(0, from + offset));
+  if (from < 0 || from === to) return null;
+  const next = [...students];
+  const [student] = next.splice(from, 1);
+  next.splice(to, 0, student);
+  return next;
+}
+
+function newStudentId(): string {
+  return crypto.randomUUID?.() ?? [...crypto.getRandomValues(new Uint32Array(4))].join('-');
+}
+
 export default function App() {
   const [state, setState] = useState<AppState>(initialState);
-  const [showModal, setShowModal] = useState(false);
-  const [editingStudentId, setEditingStudentId] = useState<string | null>(null);
+  const [startup] = useState(initialRegistry);
+  const [registry, setRegistry] = useState<GroupRegistry>(startup.registry);
+  const registryRef = useRef(registry);
+  const readsRef = useRef(new Map<string, { entry: GroupEntry; promise: Promise<void> }>());
+  const savingRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [syncError, setSyncError] = useState<{ token: string; message: string } | null>(null);
+  const [storageWarningToken, setStorageWarningToken] = useState(startup.storageWarningToken);
+  const [personEditor, setPersonEditor] = useState<PersonEditor | null>(null);
   const [selectedDay, setDay] = useState<Day>(() => todayAsDay());
   const [selectedTime, setTime] = useState(() => currentTime());
   const [mobileDockHeight, setMobileDockHeight] = useState(() => (
     (window.visualViewport?.height ?? window.innerHeight) * 0.5
   ));
 
+  const activeEntry = registry.entries.find((entry) => entry.token === registry.activeToken);
+  const activeSnapshot = activeEntry?.snapshot ?? null;
+  const students = activeSnapshot?.students ?? [];
+
+  function commitRegistry(update: (current: GroupRegistry) => GroupRegistry) {
+    const next = update(registryRef.current);
+    registryRef.current = next;
+    setStorageWarningToken(persistRegistry(next) ? null : next.activeToken);
+    setRegistry(next);
+  }
+
+  function installSnapshot(token: string, incoming: GroupSnapshot) {
+    commitRegistry((current) => ({
+      ...current,
+      entries: current.entries.map((entry) => entry.token === token
+        ? { ...entry, snapshot: acceptSnapshot(entry.snapshot, incoming) }
+        : entry),
+    }));
+  }
+
+  function capturedSnapshot(token: string, revision: number): GroupSnapshot {
+    const entry = registryRef.current.entries.find((candidate) => candidate.token === token);
+    if (!entry) {
+      forgetMissingGroup(token);
+      throw new MissingGroupError();
+    }
+    return snapshotForRevision(entry.snapshot, revision);
+  }
+
+  function forgetMissingGroup(token: string) {
+    setPersonEditor((editor) => editor?.token === token ? null : editor);
+    setSyncError((error) => error?.token === token ? null : error);
+    commitRegistry((current) => forgetGroup(current, token));
+  }
+
+  function updatePersonEditorBase(token: string, studentId: string | null, base: GroupSnapshot) {
+    setPersonEditor((editor) => editor?.token === token && editor.studentId === studentId
+      ? { ...editor, base }
+      : editor);
+  }
+
+  async function exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    if (savingRef.current) throw new Error('Another change is still being saved.');
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      return await operation();
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }
+
+  async function saveContent(token: string, base: GroupSnapshot, content: GroupContent): Promise<GroupSnapshot> {
+    return exclusive(async () => {
+      if (!registryRef.current.entries.some((entry) => entry.token === token)) {
+        forgetMissingGroup(token);
+        throw new MissingGroupError();
+      }
+      try {
+        const snapshot = await putGroup(token, base, content);
+        if (registryRef.current.entries.some((entry) => entry.token === token)) installSnapshot(token, snapshot);
+        setSyncError((error) => error?.token === token ? null : error);
+        return snapshot;
+      } catch (error) {
+        if (error instanceof GroupConflictError) {
+          if (registryRef.current.entries.some((entry) => entry.token === token)) installSnapshot(token, error.snapshot);
+        } else if (error instanceof MissingGroupError) {
+          forgetMissingGroup(token);
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function syncToken(token: string): Promise<void> {
+    const entry = registryRef.current.entries.find((candidate) => candidate.token === token);
+    if (!entry) return;
+    const pending = readsRef.current.get(token);
+    if (pending?.entry === entry) return pending.promise;
+
+    const holder = { entry, promise: Promise.resolve() };
+    holder.promise = (async () => {
+      try {
+        const incoming = await getGroup(token, entry.snapshot?.revision);
+        const currentEntry = registryRef.current.entries.find((candidate) => candidate.token === token);
+        if (currentEntry !== entry) return;
+        if (incoming) installSnapshot(token, incoming);
+        setSyncError((error) => error?.token === token ? null : error);
+      } catch (error) {
+        const currentEntry = registryRef.current.entries.find((candidate) => candidate.token === token);
+        if (currentEntry !== entry) return;
+        if (error instanceof MissingGroupError) {
+          forgetMissingGroup(token);
+          return;
+        }
+        setSyncError({ token, message: error instanceof Error ? error.message : 'Could not sync this group.' });
+      } finally {
+        if (readsRef.current.get(token) === holder) readsRef.current.delete(token);
+      }
+    })();
+    readsRef.current.set(token, holder);
+    return holder.promise;
+  }
+
+  const pollActive = useEffectEvent(() => {
+    const token = registryRef.current.activeToken;
+    if (token) void syncToken(token);
+  });
+
   useEffect(() => {
-    if (state.students.length > 0 && !state.buildingsLoaded) void loadBuildings(setState);
-  }, [state.students.length, state.buildingsLoaded]);
+    if (registry.activeToken && document.visibilityState === 'visible') pollActive();
+  }, [registry.activeToken]);
 
-  const schedules = state.students.map((student) => ({ student, slots: student.slots }));
+  useEffect(() => {
+    const pollWhenVisible = () => {
+      if (document.visibilityState === 'visible') pollActive();
+    };
+    const interval = window.setInterval(pollWhenVisible, 60_000);
+    window.addEventListener('focus', pollWhenVisible);
+    document.addEventListener('visibilitychange', pollWhenVisible);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', pollWhenVisible);
+      document.removeEventListener('visibilitychange', pollWhenVisible);
+    };
+  }, []);
 
+  const importFragment = useEffectEvent(() => {
+    const token = groupTokenFromFragment(window.location.hash);
+    try {
+      if (!token) return;
+      setPersonEditor(null);
+      setSyncError(null);
+      commitRegistry((current) => importGroupToken(current, token));
+    } finally {
+      scrubGroupFragment();
+    }
+  });
+
+  useEffect(() => {
+    window.addEventListener('hashchange', importFragment);
+    return () => window.removeEventListener('hashchange', importFragment);
+  }, []);
+
+  useEffect(() => {
+    if (students.length > 0 && !state.buildingsLoaded) void loadBuildings(setState);
+  }, [students.length, state.buildingsLoaded]);
+
+  const schedules = students.map((student) => ({ student, slots: student.slots }));
   const activeSchedules = schedules.map(({ student, slots }) => ({
     student,
     slots: atTime(slots.filter((slot) => slot.day === selectedDay), selectedTime),
@@ -710,74 +932,197 @@ export default function App() {
     });
   });
 
+  function closeModal() {
+    setPersonEditor(null);
+  }
+
+  function selectGroup(token: string) {
+    closeModal();
+    setSyncError(null);
+    commitRegistry((current) => current.entries.some((entry) => entry.token === token)
+      ? { ...current, activeToken: token }
+      : current);
+  }
+
+  async function createNewGroup() {
+    await exclusive(async () => {
+      const created = await createGroup();
+      closeModal();
+      commitRegistry((current) => ({
+        entries: [...current.entries.filter((entry) => entry.token !== created.token), created],
+        activeToken: created.token,
+      }));
+      setSyncError(null);
+    });
+  }
+
+  function openAddModal() {
+    if (!registry.activeToken || !activeSnapshot || saving) return;
+    setPersonEditor({ token: registry.activeToken, base: activeSnapshot, studentId: null, student: null });
+  }
+
+  function openEditModal(id: string) {
+    if (!registry.activeToken || !activeSnapshot) return;
+    const student = activeSnapshot.students.find((candidate) => candidate.id === id);
+    if (!student) return;
+    setPersonEditor({ token: registry.activeToken, base: activeSnapshot, studentId: id, student });
+  }
+
+  async function savePerson(value: { name: string; color: string; schedule: import('./waterloo').ParsedSchedule | null }) {
+    if (!personEditor) throw new Error('This group changed elsewhere. Review and try again.');
+    const { token, base, studentId, student } = personEditor;
+    let nextStudents: Student[];
+    if (student) {
+      if (!base.students.some((candidate) => candidate.id === student.id)) {
+        throw new GroupConflictError(base);
+      }
+      nextStudents = base.students.map((candidate) => candidate.id === student.id ? {
+        ...candidate,
+        name: value.name,
+        color: value.color,
+        ...(value.schedule ?? {}),
+      } : candidate);
+    } else {
+      if (!value.schedule) throw new Error('Paste your Quest Class Schedule List View.');
+      nextStudents = [...base.students, {
+        id: newStudentId(),
+        name: value.name,
+        color: value.color,
+        ...value.schedule,
+        addedAt: Date.now(),
+      }];
+    }
+    try {
+      await saveContent(token, base, { name: base.name, students: nextStudents });
+    } catch (error) {
+      if (error instanceof GroupConflictError) updatePersonEditorBase(token, studentId, error.snapshot);
+      throw error;
+    }
+  }
+
+  async function deletePerson() {
+    if (!personEditor?.studentId) throw new Error('This group changed elsewhere. Review and try again.');
+    const { token, base, studentId } = personEditor;
+    if (!base.students.some((student) => student.id === studentId)) {
+      throw new GroupConflictError(base);
+    }
+    try {
+      await saveContent(token, base, {
+        name: base.name,
+        students: base.students.filter((student) => student.id !== studentId),
+      });
+    } catch (error) {
+      if (error instanceof GroupConflictError) updatePersonEditorBase(token, studentId, error.snapshot);
+      throw error;
+    }
+  }
+
+  function movePerson(id: string, offset: number) {
+    if (savingRef.current || !registry.activeToken || !activeSnapshot) return;
+    const nextStudents = reorderedStudents(activeSnapshot.students, id, offset);
+    if (!nextStudents) return;
+    const token = registry.activeToken;
+    void saveContent(token, activeSnapshot, { name: activeSnapshot.name, students: nextStudents })
+      .catch((error: unknown) => setSyncError({
+        token,
+        message: error instanceof Error ? error.message : 'Could not reorder this group.',
+      }));
+  }
+
   function jumpToNow() {
     setDay(todayAsDay());
     setTime(currentTime());
   }
 
-  function openAddModal() {
-    setEditingStudentId(null);
-    setShowModal(true);
-  }
-
-  function openEditModal(id: string) {
-    setEditingStudentId(id);
-    setShowModal(true);
-  }
-
-  function closeModal() {
-    setShowModal(false);
-    setEditingStudentId(null);
-  }
-
-  function deleteStudent(id: string) {
-    removeStudent(id, setState);
-  }
-
-  const editingStudent = editingStudentId
-    ? state.students.find((student) => student.id === editingStudentId)
-    : undefined;
+  const editorStudent = personEditor?.student ?? undefined;
+  const visibleSyncError = syncError?.token === registry.activeToken ? syncError.message : null;
+  const storageWarning = storageWarningToken === registry.activeToken
+    ? 'Browser storage is unavailable. Copy the invite link before closing this tab.'
+    : null;
 
   return (
-      <div className="relative isolate h-dvh overflow-hidden bg-background text-foreground">
-        <main className="absolute inset-0 z-0">
-          <MapView markers={mapMarkers} bottomInset={mobileDockHeight} />
-        </main>
+    <div className="relative isolate h-dvh overflow-hidden bg-background text-foreground">
+      <main className="absolute inset-0 z-0">
+        <MapView markers={mapMarkers} bottomInset={mobileDockHeight} />
+      </main>
 
-        <Button
-          type="button"
-          size="lg"
-          onClick={openAddModal}
-          className="absolute right-3 top-3 z-10 h-11 shadow-lg sm:right-4 sm:top-4"
-        >
-          <UserPlus data-icon="inline-start" />
-          Add person
-        </Button>
+      <GroupControls
+        groups={registry.entries.map((entry) => ({ token: entry.token, name: entry.snapshot?.name ?? 'Loading group' }))}
+        activeToken={registry.activeToken}
+        activeSnapshot={activeSnapshot}
+        loading={Boolean(activeEntry && !activeSnapshot)}
+        saving={saving}
+        syncError={visibleSyncError}
+        storageWarning={storageWarning}
+        onSelect={selectGroup}
+        onCreate={createNewGroup}
+        onRename={async (name, token, revision) => {
+          const base = capturedSnapshot(token, revision);
+          await saveContent(token, base, { name, students: base.students });
+        }}
+        onCopyInvite={async (token) => {
+          await navigator.clipboard.writeText(groupInviteUrl(window.location, token));
+        }}
+        onLeave={(token) => {
+          closeModal();
+          setSyncError(null);
+          commitRegistry((current) => forgetGroup(current, token));
+        }}
+        onDelete={async (token, revision) => {
+          capturedSnapshot(token, revision);
+          await exclusive(async () => {
+            try {
+              await deleteGroup(token, revision);
+              closeModal();
+              commitRegistry((current) => forgetGroup(current, token));
+              setSyncError(null);
+            } catch (error) {
+              if (error instanceof GroupConflictError) {
+                installSnapshot(token, error.snapshot);
+                throw error;
+              }
+              if (!(error instanceof MissingGroupError)) throw error;
+              forgetMissingGroup(token);
+            }
+          });
+        }}
+      />
 
-        <ScheduleDock
-          schedules={schedules}
-          selectedDay={selectedDay}
-          selectedTime={selectedTime}
-          onSelectDay={setDay}
-          onSelectTime={setTime}
-          onJumpToNow={jumpToNow}
-          onEditPerson={openEditModal}
-          onMovePerson={(id, offset) => moveStudent(id, offset, setState)}
-          buildingLocations={state.buildingLocations}
-          mobileHeight={mobileDockHeight}
-          onMobileHeightChange={setMobileDockHeight}
+      <Button
+        type="button"
+        size="lg"
+        disabled={!activeSnapshot || saving}
+        onClick={openAddModal}
+        className="absolute right-3 top-3 z-10 h-11 shadow-lg sm:right-4 sm:top-4"
+      >
+        <UserPlus data-icon="inline-start" />
+        Add person
+      </Button>
+
+      <ScheduleDock
+        schedules={schedules}
+        selectedDay={selectedDay}
+        selectedTime={selectedTime}
+        onSelectDay={setDay}
+        onSelectTime={setTime}
+        onJumpToNow={jumpToNow}
+        onEditPerson={openEditModal}
+        onMovePerson={movePerson}
+        reorderDisabled={saving}
+        buildingLocations={state.buildingLocations}
+        mobileHeight={mobileDockHeight}
+        onMobileHeightChange={setMobileDockHeight}
+      />
+
+      {personEditor && (
+        <AddStudentModal
+          onClose={closeModal}
+          studentCount={personEditor.base.students.length}
+          student={editorStudent}
+          onSave={savePerson}
+          onDelete={deletePerson}
         />
-
-        {showModal && (
-          <AddStudentModal
-            onClose={closeModal}
-            studentCount={state.students.length}
-            student={editingStudent}
-            state={state}
-            setState={setState}
-            onDelete={deleteStudent}
-          />
-        )}
-      </div>
+      )}
+    </div>
   );
 }

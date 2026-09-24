@@ -189,7 +189,7 @@ export default function GroupControls({
 
   return (
     <section
-      className="absolute left-3 top-3 z-10 max-w-[calc(100vw-9.5rem)] sm:left-4 sm:top-4 sm:max-w-xs"
+      className="absolute left-3 top-3 z-10 w-[calc(100vw-9.5rem)] sm:left-4 sm:top-4 sm:w-xs"
       aria-label="Group controls"
     >
       {groups.length === 0 ? (
@@ -251,7 +251,7 @@ export default function GroupControls({
 
       {statusError && !open && (
         <div
-          className="mt-1 flex max-w-xs items-start gap-1.5 rounded-lg border border-destructive/30 bg-card/95 px-2.5 py-2 text-xs text-destructive shadow-lg backdrop-blur-md"
+          className="mt-1 flex items-start gap-1.5 rounded-lg border border-destructive/30 bg-card/95 px-2.5 py-2 text-xs text-destructive shadow-lg backdrop-blur-md"
           role="alert"
         >
           <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
@@ -261,7 +261,7 @@ export default function GroupControls({
 
       {storageWarning && !open && (
         <div
-          className="mt-1 flex max-w-xs items-start gap-1.5 rounded-lg border bg-card/95 px-2.5 py-2 text-xs text-foreground shadow-lg backdrop-blur-md"
+          className="mt-1 flex items-start gap-1.5 rounded-lg border bg-card/95 px-2.5 py-2 text-xs text-foreground shadow-lg backdrop-blur-md"
           role="alert"
         >
           <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />

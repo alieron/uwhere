@@ -747,6 +747,7 @@ export default function App() {
   const registryRef = useRef(registry);
   const readsRef = useRef(new Map<string, { entry: GroupEntry; promise: Promise<void> }>());
   const savingRef = useRef(false);
+  const followingNowRef = useRef(true);
   const [saving, setSaving] = useState(false);
   const [syncError, setSyncError] = useState<{ token: string; message: string } | null>(null);
   const [storageWarningToken, setStorageWarningToken] = useState(startup.storageWarningToken);
@@ -882,6 +883,31 @@ export default function App() {
       window.clearInterval(interval);
       window.removeEventListener('focus', pollWhenVisible);
       document.removeEventListener('visibilitychange', pollWhenVisible);
+    };
+  }, []);
+
+  const updateTimeToNow = useEffectEvent(() => {
+    if (followingNowRef.current) setTime(currentTime());
+  });
+
+  useEffect(() => {
+    let timeout: number;
+    const updateWhenVisible = () => {
+      if (document.visibilityState === 'visible') updateTimeToNow();
+    };
+    const scheduleNextMinute = () => {
+      timeout = window.setTimeout(() => {
+        updateWhenVisible();
+        scheduleNextMinute();
+      }, 60_000 - Date.now() % 60_000);
+    };
+    scheduleNextMinute();
+    window.addEventListener('focus', updateWhenVisible);
+    document.addEventListener('visibilitychange', updateWhenVisible);
+    return () => {
+      window.clearTimeout(timeout);
+      window.removeEventListener('focus', updateWhenVisible);
+      document.removeEventListener('visibilitychange', updateWhenVisible);
     };
   }, []);
 
@@ -1030,8 +1056,14 @@ export default function App() {
   }
 
   function jumpToNow() {
+    followingNowRef.current = true;
     setDay(todayAsDay());
     setTime(currentTime());
+  }
+
+  function selectTimelineTime(time: string) {
+    followingNowRef.current = false;
+    setTime(time);
   }
 
   const editorStudent = personEditor?.student ?? undefined;
@@ -1104,7 +1136,7 @@ export default function App() {
         selectedDay={selectedDay}
         selectedTime={selectedTime}
         onSelectDay={setDay}
-        onSelectTime={setTime}
+        onSelectTime={selectTimelineTime}
         onJumpToNow={jumpToNow}
         onEditPerson={openEditModal}
         onMovePerson={movePerson}

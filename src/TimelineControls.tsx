@@ -4,6 +4,8 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { DAYS, formatTime } from './waterloo';
 import type { Day } from './waterloo';
 
+const DISPLAY_DAYS = DAYS.slice(0, 5);
+
 interface Props {
   selectedDay: Day;
   selectedTime: string;
@@ -26,9 +28,9 @@ export default function TimelineControls({
         variant="outline"
         size="sm"
         spacing={0}
-        className="order-3 col-span-2 grid h-11 w-full grid-cols-6 lg:order-1 lg:col-span-1 lg:flex lg:h-auto lg:w-auto"
+        className="order-3 col-span-2 grid h-11 w-full grid-cols-5 lg:order-1 lg:col-span-1 lg:flex lg:h-auto lg:w-auto"
       >
-        {DAYS.map((day) => (
+        {DISPLAY_DAYS.map((day) => (
           <ToggleGroupItem
             key={day}
             value={day}

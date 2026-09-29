@@ -94,7 +94,7 @@ interface ScheduleDockProps {
 
 function todayAsDay(): Day {
   const dayIndex = new Date().getDay();
-  return dayIndex >= 1 && dayIndex <= 6 ? DAYS[dayIndex - 1] : 'Monday';
+  return dayIndex >= 1 && dayIndex <= 5 ? DAYS[dayIndex - 1] : 'Monday';
 }
 
 function currentTime(): string {

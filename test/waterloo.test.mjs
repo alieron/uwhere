@@ -143,10 +143,115 @@ test('parses old UWFlow grouped time and room rows', () => {
   ]);
 });
 
-test('rejects missing terms and schedules without recurring timed classes', () => {
-  assert.throws(() => parseWaterlooSchedule('PMATH 432 - Mathematical Logic'), /Waterloo term/);
+test('parses mobile Quest schedules without a term heading', () => {
+  const schedule = parseWaterlooSchedule(`
+    Weekly Calendar View
+    Class Schedule Filter Options
+    CO 250 - Intro Optimization
+    Status
+    Enrolled
+    Class Nbr
+    6605
+    Section
+    081
+    Component
+    LEC
+    Days & Times
+    TBA
+    Room
+    ONLN - Online
+    Start/End Date
+    09/09/2026 - 12/08/2026
+    CO 485 - Public-Key Cryptography Math
+    Status
+    Enrolled
+    Class Nbr
+    5963
+    Section
+    001
+    Component
+    LEC
+    Days & Times
+    TTh 11:30AM - 12:50PM
+    Room
+    MC 4064
+    Start/End Date
+    09/09/2026 - 12/08/2026
+    CS 341 - Algorithms
+    Status
+    Enrolled
+    Class Nbr
+    6358
+    Section
+    101
+    Component
+    LAB
+    Days & Times
+    F 10:30AM - 11:20AM
+    Room
+    MC 4045
+    Class Nbr
+    6547
+    Section
+    003
+    Component
+    LEC
+    Days & Times
+    TTh 10:00AM - 11:20AM
+    Room
+    MC 4045
+    Class Nbr
+    6549
+    Section
+    201
+    Component
+    TST
+    Days & Times
+    M 6:00PM - 7:50PM
+    Room
+    TBA
+    CS 343 - Concurrent & Parallel Program
+    Status
+    Enrolled
+    Class Nbr
+    5928
+    Section
+    101
+    Component
+    TST
+    Days & Times
+    W 7:00PM - 8:50PM
+    Room
+    TBA
+    Class Nbr
+    6171
+    Section
+    002
+    Component
+    LEC
+    Days & Times
+    TTh 2:30PM - 3:50PM
+    Room
+    MC 2017
+  `);
+
+  assert.equal(schedule.term, 'Fall');
+  assert.equal(schedule.year, 2026);
+  assert.deepEqual(schedule.slots.map(({ courseCode, classNumber, component, day, venue }) => ({
+    courseCode, classNumber, component, day, venue,
+  })), [
+    { courseCode: 'CO 485', classNumber: '5963', component: 'LEC', day: 'Tuesday', venue: 'MC 4064' },
+    { courseCode: 'CO 485', classNumber: '5963', component: 'LEC', day: 'Thursday', venue: 'MC 4064' },
+    { courseCode: 'CS 341', classNumber: '6358', component: 'LAB', day: 'Friday', venue: 'MC 4045' },
+    { courseCode: 'CS 341', classNumber: '6547', component: 'LEC', day: 'Tuesday', venue: 'MC 4045' },
+    { courseCode: 'CS 341', classNumber: '6547', component: 'LEC', day: 'Thursday', venue: 'MC 4045' },
+    { courseCode: 'CS 343', classNumber: '6171', component: 'LEC', day: 'Tuesday', venue: 'MC 2017' },
+    { courseCode: 'CS 343', classNumber: '6171', component: 'LEC', day: 'Thursday', venue: 'MC 2017' },
+  ]);
+});
+
+test('uses a fallback term but still rejects schedules without recurring timed classes', () => {
   assert.throws(() => parseWaterlooSchedule(`
-    Spring 2026
     PMATH 432 - Mathematical Logic
     12345
     001

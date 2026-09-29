@@ -39,6 +39,7 @@ const DAY_TOKENS: [string, Day][] = [
 const TIME_LINE = /^((?:Th|Sa|Su|M|T|W|F)+)\s+(\d{1,2}:\d{2}(?:\s*[AP]M)?)\s*-\s*(\d{1,2}:\d{2}(?:\s*[AP]M)?)$/i;
 const MODERN_HEADING = /^([A-Z]{2,}(?:\s+[A-Z]{2,})?\s+\d+[A-Z]?)\s+-\s+.+$/i;
 const OLD_HEADING = /^([A-Z]{2,}(?:\s+[A-Z]{2,})?\s+\d+[A-Z]?)-(\d{3})$/i;
+const MOBILE_FIELD_LABEL = /^(Class Nbr|Section|Component|Days & Times|Room)$/i;
 
 export function currentWaterlooTerm(date = new Date()): { term: Term; year: number } {
   const month = date.getMonth();
@@ -110,14 +111,18 @@ export function parseWaterlooSchedule(text: string): ParsedSchedule {
     .replace(/\u00a0/g, ' ')
     .replace(/[–—−]/g, '-');
   const termMatch = normalized.match(/\b(Winter|Spring|Fall)\s+(\d{4})\b/i);
-  if (!termMatch) throw new Error('Could not find a Waterloo term such as Fall 2026.');
-
-  const term = `${termMatch[1][0].toUpperCase()}${termMatch[1].slice(1).toLowerCase()}` as Term;
-  const year = Number(termMatch[2]);
+  const dateMatch = normalized.match(/\b(\d{2})\/\d{2}\/(\d{4})\s*-/);
+  const fallback = dateMatch
+    ? currentWaterlooTerm(new Date(Number(dateMatch[2]), Number(dateMatch[1]) - 1))
+    : currentWaterlooTerm();
+  const term = termMatch
+    ? `${termMatch[1][0].toUpperCase()}${termMatch[1].slice(1).toLowerCase()}` as Term
+    : fallback.term;
+  const year = termMatch ? Number(termMatch[2]) : fallback.year;
   const lines = normalized
     .split(/\n|\t+/)
     .map((line) => line.replace(/\s+/g, ' ').trim())
-    .filter(Boolean);
+    .filter((line) => line && !MOBILE_FIELD_LABEL.test(line));
   const slots: ScheduleSlot[] = [];
   const seen = new Set<string>();
 

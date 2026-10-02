@@ -327,9 +327,19 @@ function LessonBlock({
             {slot.courseCode} {slot.component}{missingVenue ? ', location unavailable' : ''}
           </span>
         </TooltipTrigger>
-        <TooltipContent>
+        <TooltipContent onPointerDown={(event) => event.stopPropagation()}>
           <div className="flex flex-col gap-0.5">
-            <p className="font-semibold">{slot.courseCode} {slot.component}</p>
+            <p className="font-semibold">
+              <a
+                href={`https://uwflow.com/course/${slot.courseCode.replace(/\s+/g, '').toLowerCase()}`}
+                target="_blank"
+                rel="noreferrer"
+                className="underline underline-offset-2 hover:no-underline focus-visible:outline-1 focus-visible:outline-offset-2"
+              >
+                {slot.courseCode}
+              </a>{' '}
+              {slot.component}
+            </p>
             <p className="opacity-80">
               {formatTime(slot.startTime)}-{formatTime(slot.endTime)} · {slot.venue || 'No venue'}
             </p>
